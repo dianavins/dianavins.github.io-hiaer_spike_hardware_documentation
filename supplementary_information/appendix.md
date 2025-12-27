@@ -1,7 +1,7 @@
 ---
-title: "Appendix"
-has_children: true
-nav_order: 6
+title: "Appendix: Hardware Glossary"
+parent: Supplementary Information
+nav_order: 1
 ---
 
 # Appendix: Hardware Glossary for Software Experts

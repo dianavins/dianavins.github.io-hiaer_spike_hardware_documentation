@@ -1,10 +1,10 @@
 ---
-title: 2. The Network Comes to Life
+title: 2 The Network Comes to Life
 has_children: true
 nav_order: 4
 ---
 
-# Chapter 2: The Network Comes to Life
+# 2 The Network Comes to Life
 
 ## Introduction
 

@@ -21,7 +21,9 @@ parent: Introduction
 │  ┌──────────────────────────▼───────────────────────────────────────────────┐  │
 │  │  System Memory (DDR4 SDRAM - 1 TB total)                                 │  │
 │  │  - Physical: DRAM cells (capacitor + transistor per bit)                 │  │
-│  │  - Organization: Ranks → DIMMs → Banks → Rows → Columns                  │  │
+│  │  - Organization (largest to smallest):                                   │  │
+│  │    DIMM (memory stick) → Rank (one side of chips) → Chip →              │  │
+│  │    Bank (section within chip) → Row (line of cells) → Column (bit)      │  │
 │  │  - Width: 64-bit data bus per channel                                    │  │
 │  │  - Contains: DMA descriptor rings, buffers for PCIe transfers            │  │
 │  │  - DMA Buffer Layout (written by hs_bridge):                             │  │

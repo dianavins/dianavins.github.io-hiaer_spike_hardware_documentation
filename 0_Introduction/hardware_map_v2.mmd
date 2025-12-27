@@ -1,0 +1,137 @@
+%%{init: {'theme':'base', 'themeVariables': { 'fontSize':'16px'}}}%%
+graph TB
+    %% ===========================================
+    %% HOST SYSTEM
+    %% ===========================================
+    subgraph HOST["<b>HOST SYSTEM</b>"]
+        direction TB
+
+        subgraph CPU_PKG["<b>CPU Die/Package</b>"]
+            direction TB
+            CPU_CORES["<b>CPU Cores</b><br/>(AMD EPYC 7502)<br/>Execute hs_bridge software"]
+            MEM_CTRL["<b>Memory Controller</b><br/>Routes DDR4 & PCIe traffic<br/>Integrated in CPU"]
+            PCIE_ROOT["<b>PCIe Root Complex</b><br/>Manages PCIe connections<br/>Integrated in CPU"]
+        end
+
+        DDR4["<b>DDR4 System RAM</b><br/>(8-64 GB)<br/>DMA Buffers<br/>Command Packets<br/>Network Config"]
+    end
+
+    %% ===========================================
+    %% FPGA SYSTEM
+    %% ===========================================
+    subgraph FPGA_SYS["<b>FPGA SYSTEM</b>"]
+        direction TB
+
+        subgraph FPGA_DIE["<b>FPGA Die</b><br/>(Xilinx XCVU37p)"]
+            direction TB
+
+            PCIE_HARD["<b>PCIe Hard Block</b><br/>Gen3 x16 Interface<br/>SerDes + PHY"]
+
+            subgraph LOGIC["<b>Configurable Logic</b>"]
+                direction LR
+                CLBS["<b>CLBs</b><br/>LUTs + Flip-Flops<br/>Reconfigurable logic"]
+                BRAM["<b>BRAM</b><br/>Block RAM<br/>32,768 × 256 bits"]
+                URAM["<b>URAM</b><br/>UltraRAM<br/>16 banks × 288 Kb<br/>Neuron states"]
+            end
+
+            HBM_IF["<b>HBM Interface Controllers</b><br/>32 AXI4 ports<br/>(Hard IP)"]
+
+            FIFOS["<b>FIFOs</b><br/>Input/Output (PCIe)<br/>Pointer (HBM→neurons)<br/>Spike (neurons→ctrl)"]
+        end
+
+        subgraph INTERPOSER["<b>Silicon Interposer</b>"]
+            direction LR
+            HBM1["<b>HBM Stack 1</b><br/>2 GB<br/>8 channels"]
+            HBM2["<b>HBM Stack 2</b><br/>2 GB<br/>8 channels"]
+            HBM3["<b>HBM Stack 3</b><br/>2 GB<br/>8 channels"]
+            HBM4["<b>HBM Stack 4</b><br/>2 GB<br/>8 channels"]
+        end
+    end
+
+    %% ===========================================
+    %% INTERNAL CPU CONNECTIONS (Purple - Dotted)
+    %% ===========================================
+    CPU_CORES -.->|"Internal<br/>Bus"| MEM_CTRL
+    CPU_CORES -.->|"Internal<br/>Bus"| PCIE_ROOT
+    MEM_CTRL -.->|"Routes to<br/>PCIe"| PCIE_ROOT
+
+    %% ===========================================
+    %% DDR4 BUS CONNECTIONS (Blue - Thick)
+    %% ===========================================
+    MEM_CTRL ==>|"<b>DDR4 Bus</b><br/>64-bit wide<br/>3200 MT/s<br/>Raw electrical signals<br/>25.6 GB/s"| DDR4
+
+    %% ===========================================
+    %% PCIe TLP CONNECTIONS (Red - Thick)
+    %% ===========================================
+    PCIE_ROOT ==>|"<b>PCIe TLP Packets</b><br/>16 lanes Gen3<br/>Memory Read/Write<br/>Completions<br/>~15.75 GB/s"| PCIE_HARD
+    PCIE_HARD ==>|"<b>PCIe TLP Packets</b><br/>DMA transfers<br/>MMIO<br/>MSI-X Interrupts"| PCIE_ROOT
+
+    %% ===========================================
+    %% FPGA INTERNAL CONNECTIONS (Light connections)
+    %% ===========================================
+    PCIE_HARD -->|"Data<br/>Flow"| FIFOS
+    FIFOS -->|"Commands"| LOGIC
+    LOGIC -->|"Memory<br/>Requests"| HBM_IF
+    FIFOS -->|"Results"| PCIE_HARD
+
+    %% ===========================================
+    %% AXI4 CONNECTIONS (Green - Medium)
+    %% ===========================================
+    HBM_IF ==>|"<b>AXI4</b><br/>AR+R+AW+W+B<br/>32 ports total"| HBM1
+    HBM_IF ==>|"<b>AXI4</b><br/>32 ports total"| HBM2
+    HBM_IF ==>|"<b>AXI4</b><br/>32 ports total"| HBM3
+    HBM_IF ==>|"<b>AXI4</b><br/>32 ports total"| HBM4
+
+    %% ===========================================
+    %% SILICON INTERPOSER CONNECTIONS (Orange - Thick)
+    %% ===========================================
+    FPGA_DIE ===|"<b>Microbumps</b><br/>1024-bit wide<br/>per stack"| INTERPOSER
+
+    %% ===========================================
+    %% STYLING
+    %% ===========================================
+
+    %% Host components (Light Blue)
+    classDef hostStyle fill:#E3F2FD,stroke:#1976D2,stroke-width:3px,color:#000
+    classDef cpuInternalStyle fill:#90CAF9,stroke:#1565C0,stroke-width:2px,color:#000
+    classDef memoryStyle fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px,color:#000
+
+    %% FPGA components (Light Green)
+    classDef fpgaStyle fill:#E8F5E9,stroke:#388E3C,stroke-width:3px,color:#000
+    classDef fpgaInternalStyle fill:#A5D6A7,stroke:#2E7D32,stroke-width:2px,color:#000
+
+    %% HBM (Orange)
+    classDef hbmStyle fill:#FFE0B2,stroke:#E65100,stroke-width:2px,color:#000
+    classDef interposerStyle fill:#FFF3E0,stroke:#EF6C00,stroke-width:3px,color:#000
+
+    %% Apply styles to nodes
+    class HOST hostStyle
+    class CPU_PKG cpuInternalStyle
+    class CPU_CORES,MEM_CTRL,PCIE_ROOT cpuInternalStyle
+    class DDR4 memoryStyle
+
+    class FPGA_SYS fpgaStyle
+    class FPGA_DIE fpgaStyle
+    class PCIE_HARD,HBM_IF,FIFOS fpgaInternalStyle
+    class LOGIC fpgaInternalStyle
+    class CLBS,BRAM,URAM fpgaInternalStyle
+
+    class INTERPOSER interposerStyle
+    class HBM1,HBM2,HBM3,HBM4 hbmStyle
+
+    %% Link styles (arrows)
+    linkStyle 0 stroke:#9C27B0,stroke-width:2px,stroke-dasharray:5
+    linkStyle 1 stroke:#9C27B0,stroke-width:2px,stroke-dasharray:5
+    linkStyle 2 stroke:#9C27B0,stroke-width:2px,stroke-dasharray:5
+    linkStyle 3 stroke:#2196F3,stroke-width:4px
+    linkStyle 4 stroke:#F44336,stroke-width:4px
+    linkStyle 5 stroke:#F44336,stroke-width:4px
+    linkStyle 6 stroke:#757575,stroke-width:2px
+    linkStyle 7 stroke:#757575,stroke-width:2px
+    linkStyle 8 stroke:#757575,stroke-width:2px
+    linkStyle 9 stroke:#757575,stroke-width:2px
+    linkStyle 10 stroke:#4CAF50,stroke-width:3px
+    linkStyle 11 stroke:#4CAF50,stroke-width:3px
+    linkStyle 12 stroke:#4CAF50,stroke-width:3px
+    linkStyle 13 stroke:#4CAF50,stroke-width:3px
+    linkStyle 14 stroke:#FF9800,stroke-width:4px

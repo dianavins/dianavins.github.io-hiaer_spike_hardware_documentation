@@ -1,10 +1,10 @@
 ---
-title: 1. Initializing the Network
+title: 1 Initializing the Network
 has_children: true
 nav_order: 3
 ---
 
-# Chapter 1: Initializing the Network
+# 1 Initializing the Network
 
 ## Introduction
 
