@@ -119,7 +119,7 @@ Different types of memory make different trade-offs between these properties.
 So the full hierarchy: **Building → Floor → Bookshelf → Section → Shelf → Book → Page**
 Or in hardware terms: **DIMM → Rank → Chip → Bank → Row → Column → DRAM cell**
 
-When you read memory at address 0x12345678, the memory controller breaks it down:
+When you read memory at [address](../supplementary_information/addresses_explained.md) 0x12345678, the memory controller breaks it down:
 - "Go to DIMM #2, Rank #1, Chip #5, Bank #3, Row #42, Column #100"
 - Like saying: "Building 2, Floor 1, Bookshelf 5, Section 3, Shelf 42, Book 100"
 

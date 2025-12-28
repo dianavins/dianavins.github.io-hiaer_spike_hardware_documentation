@@ -1,0 +1,107 @@
+graph TB
+    subgraph HOST["HOST COMPUTER"]
+        style HOST fill:#f0f0f0,stroke:#333,stroke-width:3px
+
+        PYDEF["<b>Your Network Definition</b><br/>(Python objects in RAM)<br/><br/>axons = {'a0': [('h0', 1000), ...], ...}<br/>connections = {'h0': [('o0', 1000), ...], ...}"]
+        style PYDEF fill:#e8f4f8,stroke:#0066cc
+
+        ARROW["▼<br/><br/>After CRI_network(target='CRI')<br/>network is compiled and transferred<br/><br/>▼"]
+        style ARROW fill:#fff,stroke:none
+
+        PCIE["PCIe transfers during initialization"]
+        style PCIE fill:#ffe6e6,stroke:#cc0000
+    end
+
+    subgraph FPGA["FPGA HARDWARE"]
+        style FPGA fill:#fff8e1,stroke:#333,stroke-width:3px
+
+        TITLE["<b>Three Memory Systems</b><br/>(each stores different network data)"]
+        style TITLE fill:#fff,stroke:none
+
+        subgraph URAM_BOX["3. URAM (UltraRAM) - 4.5 MB"]
+            style URAM_BOX fill:#f1f8e9,stroke:#558b2f,stroke-width:2px
+
+            URAM_FUNC["<b>Function:</b> Stores NEURON STATES (membrane potentials)"]
+            URAM_WRITE["<b>Written:</b> Initially zeroed during clear(), then updated<br/>at runtime as neurons integrate inputs"]
+            URAM_CONTENT["<b>Content:</b> Current membrane potential for each neuron"]
+            URAM_ORG["<br/><b>Organization:</b> 16 banks, each handling 8,192 neurons<br/>- Hidden neurons h0-h4 are in Bank 0<br/>- Output neurons o0-o4 are also in Bank 0"]
+            URAM_INIT["<br/><b>Initial state (after clear()):</b><br/>h0: V = 0 (membrane potential starts at zero)<br/>h1: V = 0<br/>h2: V = 0<br/>... (all neurons start at V=0)<br/><br/>[Values change during execution as synaptic inputs accumulate]"]
+
+            style URAM_FUNC fill:#dcedc8,stroke:none
+            style URAM_WRITE fill:#dcedc8,stroke:none
+            style URAM_CONTENT fill:#dcedc8,stroke:none
+            style URAM_ORG fill:#dcedc8,stroke:none
+            style URAM_INIT fill:#fff9c4,stroke:#f57c00
+        end
+
+        subgraph HBM_BOX["2. HBM (High Bandwidth Memory) - 8 GB"]
+            style HBM_BOX fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+
+            HBM_FUNC["<b>Function:</b> Stores NETWORK STRUCTURE (connectivity & weights)"]
+            HBM_WRITE["<b>Written:</b> DURING INITIALIZATION ← What Chapter 1 focuses on"]
+            HBM_CONTENT["<b>Content:</b> Three sub-regions:"]
+
+            style HBM_FUNC fill:#bbdefb,stroke:none
+            style HBM_WRITE fill:#bbdefb,stroke:none
+            style HBM_CONTENT fill:#bbdefb,stroke:none
+
+            subgraph HBM_R3["HBM Region 3: SYNAPSES (Base: 0x8000)"]
+                style HBM_R3 fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+
+                R3_SIZE["Size: Variable (depends on network size)"]
+                R3_DESC["<br/>This is where the ACTUAL CONNECTIONS live.<br/>Each HBM row stores 8 synapses.<br/>Each synapse is 32 bits: [OpCode | Address | Weight]"]
+                R3_EX1["<br/><b>Example for our network:</b><br/>Row 0x8000 (Axon a0's synapses):<br/>  Synapse 0: [OpCode=000, Target=h0, Weight=1000]<br/>  Synapse 1: [OpCode=000, Target=h1, Weight=1000]<br/>  Synapse 2: [OpCode=000, Target=h2, Weight=1000]<br/>  Synapse 3: [OpCode=000, Target=h3, Weight=1000]<br/>  Synapse 4: [OpCode=000, Target=h4, Weight=1000]<br/>  Synapse 5-7: [Unused padding = 0x0000_0000]"]
+                R3_EX2["<br/>Row 0x8005 (Neuron h0's output synapses):<br/>  Synapse 0: [OpCode=000, Target=o0, Weight=1000]<br/>  Synapse 1: [OpCode=000, Target=o1, Weight=1000]<br/>  ... (h0 connects to all 5 output neurons)"]
+
+                style R3_SIZE fill:#f8bbd0,stroke:none
+                style R3_DESC fill:#f8bbd0,stroke:none
+                style R3_EX1 fill:#f8bbd0,stroke:none
+                style R3_EX2 fill:#f8bbd0,stroke:none
+            end
+
+            subgraph HBM_R2["HBM Region 2: NEURON POINTERS (Base: 0x4000)"]
+                style HBM_R2 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+
+                R2_SIZE["Size: 512 KB"]
+                R2_DESC["<br/>For each neuron, stores a pointer saying:<br/>'Where are this neuron's output synapses stored?'<br/>'How many synapse rows does this neuron have?'"]
+                R2_EX["<br/><b>Example for our network:</b><br/>Neuron h0 pointer: 'Start at row 0x8005, length 1 row'<br/>Neuron h1 pointer: 'Start at row 0x8006, length 1 row'<br/>... (one pointer per hidden neuron)<br/><br/>Output neurons (o0-o4): Also have pointers, but<br/>their synapses are SPIKE OUTPUT ENTRIES (tell<br/>hardware to send spike back to host instead of<br/>to another neuron)"]
+
+                style R2_SIZE fill:#e1bee7,stroke:none
+                style R2_DESC fill:#e1bee7,stroke:none
+                style R2_EX fill:#e1bee7,stroke:none
+            end
+
+            subgraph HBM_R1["HBM Region 1: AXON POINTERS (Base: 0x0000)"]
+                style HBM_R1 fill:#fff3e0,stroke:#e65100,stroke-width:2px
+
+                R1_SIZE["Size: 512 KB"]
+                R1_DESC["<br/>For each axon, stores a pointer saying:<br/>'Where are this axon's synapses stored in HBM?'<br/>'How many synapse rows does this axon have?'"]
+                R1_EX["<br/><b>Example for our network:</b><br/>Axon a0 pointer: 'Start at row 0x8000, length 1 row'<br/>Axon a1 pointer: 'Start at row 0x8001, length 1 row'<br/>... (one pointer per axon)"]
+
+                style R1_SIZE fill:#ffe0b2,stroke:none
+                style R1_DESC fill:#ffe0b2,stroke:none
+                style R1_EX fill:#ffe0b2,stroke:none
+            end
+        end
+
+        subgraph BRAM_BOX["1. BRAM (Block RAM) - 1 MB"]
+            style BRAM_BOX fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+
+            BRAM_FUNC["<b>Function:</b> Stores INPUT SPIKE PATTERNS at runtime"]
+            BRAM_WRITE["<b>Written:</b> During execution when you call network.step()"]
+            BRAM_CONTENT["<b>Content:</b> Which axons are firing RIGHT NOW"]
+            BRAM_NOTE["<br/>[NOT written during initialization - stays empty until runtime]"]
+
+            style BRAM_FUNC fill:#c8e6c9,stroke:none
+            style BRAM_WRITE fill:#c8e6c9,stroke:none
+            style BRAM_CONTENT fill:#c8e6c9,stroke:none
+            style BRAM_NOTE fill:#fff9c4,stroke:#f57c00
+        end
+    end
+
+    PYDEF --> ARROW
+    ARROW --> PCIE
+    PCIE --> TITLE
+    TITLE --> URAM_BOX
+    TITLE --> HBM_BOX
+    TITLE --> BRAM_BOX

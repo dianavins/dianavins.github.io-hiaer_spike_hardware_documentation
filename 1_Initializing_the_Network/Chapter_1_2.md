@@ -31,7 +31,7 @@ Imagine two buildings (Host and FPGA) connected by a mail chute:
 **Key differences from actual mail:**
 1. **Speed:** PCIe sends "letters" (data packets) at ~14 GB/second
 2. **Automation:** Software libraries handle packing/unpacking automatically
-3. **Direct Memory Access:** FPGA can reach into Host's memory and grab data without Host CPU doing the work
+3. **Direct Memory Access (DMA):** During initialization, the host pushes data directly to FPGA memory without CPU involvement in each transfer
 
 #### The Physical Link: PCIe
 
@@ -47,17 +47,17 @@ Imagine two buildings (Host and FPGA) connected by a mail chute:
 
 **Two communication modes:**
 
-1. **Host-Initiated (MMIO - Memory-Mapped I/O):**
+1. **Host-to-FPGA (PCIe Memory Write TLPs):**
    - Host sends packet: "Write this data to FPGA address X"
    - FPGA receives packet, stores data
-   - Used for: Sending commands, small data transfers
+   - Used for: Initialization data transfers (HBM programming, commands, parameters)
 
-2. **FPGA-Initiated (DMA - Direct Memory Access):**
+2. **FPGA-to-Host (PCIe Memory Read TLPs):**
    - FPGA sends packet: "Read data from Host address Y and send it to me"
    - Host memory responds with data
-   - Used for: Large bulk transfers (like our HBM programming)
+   - Used for: Output spike data retrieval after execution
 
-During network initialization, we use **DMA** heavily because we're transferring potentially megabytes of synapse data.
+During network **initialization**, we use **mode 1 exclusively** - the host pushes all network data to the FPGA via PCIe Memory Write TLPs. The FPGA is passive and only receives. During **execution**, the FPGA may use mode 2 to send spike outputs back to the host.
 
 ---
 
@@ -346,7 +346,7 @@ File: `hs_bridge/wrapped_dmadump/dmadump.py` (Python wrapper for C library)
 ```python
 def dma_dump_write(data, length, flag1, flag2, flag3, flag4, method):
     '''
-    Sends data from host memory to FPGA via DMA
+    Sends data from host memory to FPGA via PCIe Memory Write TLPs
 
     Parameters:
     - data: NumPy array containing bytes to send
@@ -357,12 +357,12 @@ def dma_dump_write(data, length, flag1, flag2, flag3, flag4, method):
     - 0 on success, non-zero on error
     '''
     # This Python function calls a C extension
-    # The C library handles:
-    #   1. Allocating DMA-capable host memory buffer
-    #   2. Copying 'data' into that buffer
-    #   3. Getting physical address of buffer (for FPGA to read)
-    #   4. Programming FPGA DMA registers via MMIO
-    #   5. Waiting for DMA completion
+    # The C library (adxdma_dmadump.cpp) handles:
+    #   1. Calls ADXDMA_WriteDMA() from vendor library
+    #   2. Vendor library interfaces with Linux/Windows kernel driver
+    #   3. Kernel driver builds PCIe Memory Write TLPs
+    #   4. TLPs are sent to FPGA's BAR (Base Address Register) address
+    #   5. FPGA receives via PCIe endpoint and writes to Input FIFO
 ```
 
 **Step 2.2: Physical DMA operation**
@@ -371,75 +371,126 @@ What actually happens on the hardware:
 
 ```
 1. Host allocates DMA buffer in RAM:
-   Virtual address: 0x7FFF_1234_5000 (example)
-   Physical address: 0x1_2345_6000 (translated by OS)
-   Size: length bytes (e.g., 256 bytes for one HBM row)
+   Virtual address: 0x7FFF_1234_5000 (example - OS virtual memory)
+   Physical address: 0x1_2345_6000 (translated by OS page tables)
+   Size: length bytes (e.g., 64 bytes for one 512-bit packet)
 
 2. Host copies data into DMA buffer:
    memcpy(dma_buffer, data, length)
 
-3. Host writes to FPGA MMIO registers (via PCIe Memory Write TLP):
-   PCIe Write to FPGA address 0xD000_0000 (example MMIO register):
-     Value: 0x1_2345_6000 (physical address of buffer)
+3. Host PCIe driver sends Memory Write TLP(s) directly to FPGA:
+   The ADXDMA_WriteDMA() library function calls the kernel driver, which:
+   - Builds PCIe Memory Write Transaction Layer Packets (TLPs)
+   - Sends them to the FPGA's PCIe Base Address Register (BAR) address
+   - No MMIO register programming needed - data goes directly to FPGA
 
-   PCIe Write to FPGA address 0xD000_0004:
-     Value: 256 (length of transfer)
+4. PCIe TLP travels from Host → FPGA:
+   Physical link: 16 lanes × differential pairs
+   Packet format: Header + Payload + CRC
+   The FPGA PCIe endpoint receives the TLP
 
-   PCIe Write to FPGA address 0xD000_0008:
-     Value: 0x1 (start DMA, direction: read from host)
+5. FPGA PCIe Endpoint presents data via AXI4:
+   - PCIe endpoint IP block decodes the TLP
+   - Presents as AXI4 write transaction to pcie2fifos.v
+   - AXI4 signals: awaddr, awvalid, wdata, wvalid, etc.
 
-4. FPGA DMA engine (part of pcie2fifos.v) executes:
-   - Reads descriptor from MMIO registers
-   - Issues PCIe Memory Read TLP:
-       Header: Read Request
-       Address: 0x1_2345_6000 (host physical address)
-       Length: 256 bytes
+6. pcie2fifos.v receives AXI4 write:
+   - Accepts write when wvalid=1 and wready=1
+   - Extracts 512-bit payload from s_axi_wdata
+   - Writes to Input FIFO
+   - FIFO stores data for command_interpreter.v to process
 
-5. Host PCIe Root Complex receives read request:
-   - Decodes address 0x1_2345_6000
-   - Routes to memory controller
-   - Memory controller reads from DDR4 SDRAM
-   - Returns data in PCIe Completion TLP
+   **What pcie2fifos.v does (black box view):**
 
-6. FPGA receives Completion TLP:
-   - Extracts 256 bytes of payload
-   - Writes to Input FIFO (512-bit interface)
-   - Asserts completion interrupt to host (MSI-X)
+   INPUT: AXI4 Protocol (complex handshaking: awaddr, awvalid, awready, wdata, wvalid, wready)
+   → Bursty timing, requires coordination between sender and receiver
+
+   OUTPUT: FIFO Interface (simple: fifo_dout[511:0], fifo_empty, fifo_rd_en)
+   → Smooth timing, command_interpreter reads at its own pace
+
+   **Transformation:** Complex AXI4 protocol → Simple FIFO read interface
+   **Buffering:** Can store up to 16 × 512-bit packets
+   **Data:** The 512-bit payload is unchanged, just the access method differs
+
+   Think of it like a mail slot: the mail carrier (PCIe) can drop letters whenever they
+   arrive, and the recipient (command_interpreter) can pick them up whenever convenient.
+   The letters aren't changed, just stored temporarily (up to 16 letters) so sender and
+   receiver don't have to coordinate timing.
 ```
 
-**PCIe Packet Example (Memory Read for DMA):**
+**IMPORTANT:** The FPGA is **passive** during initialization - it only receives data. The host is the DMA "master" that pushes data to the FPGA. There is **no FPGA DMA engine** reading from host memory during this process.
+
+---
+
+### PCIe Packet Details
+
+**PCIe Memory Write TLP (Host → FPGA):**
+
 ```
-TLP Header (16 bytes):
+TLP Header (16 bytes for 64-bit addressing):
 ┌────────────────────────────────────────────────────────────┐
-│ [127:125] Fmt = 001 (Memory Read, 64-bit address)         │
-│ [124:120] Type = 00000 (Memory Read)                       │
-│ [119:110] Length = 64 DW (256 bytes = 64 dwords)           │
-│ [109:96]  Requester ID = 01:00.0 (Bus:Dev.Func of FPGA)   │
-│ [95:88]   Tag = 5 (identifies this transaction)            │
-│ [87:64]   Address[63:32] = 0x0000_0001 (upper 32 bits)     │
-│ [63:2]    Address[31:2] = 0x2345_6000 >> 2 (lower 30 bits) │
-│ [1:0]     Reserved                                          │
+│ [127:125] Fmt = 011 (Memory Write, 64-bit address, data)   │
+│ [124:120] Type = 00000 (Memory Write)                       │
+│ [119:110] Length = 16 DW (64 bytes = 16 dwords = 512 bits) │
+│ [109:96]  Requester ID = 00:00.0 (Host PCIe Root Complex)  │
+│ [95:88]   Tag = 7 (identifies this transaction)             │
+│ [87:80]   Last DW BE = 0xF (all bytes valid)                │
+│ [79:72]   First DW BE = 0xF (all bytes valid)               │
+│ [71:64]   Address[63:32] = 0x0000_0000 (upper 32 bits)      │
+│ [63:2]    Address[31:2] = BAR0_BASE >> 2 (FPGA address)     │
+│ [1:0]     Reserved = 0b00                                    │
 └────────────────────────────────────────────────────────────┘
 
-No payload (this is a read request)
+Payload (64 bytes = 512 bits):
+  [511:504] = 0x02 (opcode: HBM write command)
+  [503:496] = 0x00 (coreID)
+  [495:280] = padding
+  [279]     = 0x1 (write flag)
+  [278:256] = 0x8000 (HBM row address)
+  [255:0]   = synapse/pointer data (256 bits)
 
-CRC (4 bytes): 0x12345678 (example)
+CRC (4 bytes): 0x1A2B3C4D (example - calculated by PCIe controller)
 ```
 
-**PCIe Completion Packet (Host's response):**
-```
-TLP Header:
-- Fmt/Type = Completion with Data
-- Completer ID = 00:00.0 (Host memory controller)
-- Tag = 5 (matches request)
-- Byte Count = 256
+**What happens when FPGA receives this TLP:**
 
-Payload (256 bytes):
-  [First 64 bytes = HBM write command header + first pointers]
-  0x02 0x00 ... (command data from dmadump array)
+1. **PCIe Endpoint IP Block:**
+   - Receives serial data on 16 differential lane pairs
+   - Deserializes and decodes TLP
+   - Checks CRC (discards if bad)
+   - Extracts address and payload
 
-CRC: 0xABCDEF01
-```
+2. **Address Decode:**
+   - Address 0x0000_0000_XXXX_XXXX falls within BAR0 (Base Address Register 0)
+   - Routes to AXI4 master connected to pcie2fifos.v
+
+3. **AXI4 Write Transaction:**
+   ```verilog
+   // PCIe endpoint drives these signals to pcie2fifos.v:
+   s_axi_awaddr  = 64'h0000_0000_XXXX_XXXX  // Address (ignored by pcie2fifos)
+   s_axi_awvalid = 1'b1                      // Address valid
+   s_axi_wdata   = 512'h02...                // The 512-bit payload
+   s_axi_wvalid  = 1'b1                      // Data valid
+   s_axi_wlast   = 1'b1                      // Last beat in burst
+   ```
+
+4. **pcie2fifos.v accepts write:**
+   ```verilog
+   always @(posedge aclk) begin
+       if (s_axi_wvalid && s_axi_wready) begin
+           input_fifo_din <= s_axi_wdata[511:0];
+           input_fifo_wr_en <= 1'b1;
+       end
+   end
+   ```
+
+5. **Input FIFO stores data:**
+   - FIFO is a BRAM primitive (Xilinx XPM_FIFO)
+   - Stores the 512-bit word
+   - Asserts ~empty signal
+   - command_interpreter.v reads on next cycle
+
+**Note:** If data exceeds one TLP's maximum payload size (typically 256 bytes), the PCIe driver automatically splits it into multiple TLPs. For our 512-bit (64-byte) packets, one TLP is sufficient.
 
 ---
 
@@ -447,28 +498,54 @@ CRC: 0xABCDEF01
 
 **Step 3.1: pcie2fifos.v receives packet**
 
-File: `hardware_code/gopa/CRI_proj/pcie2fifos.v` (Verilog, conceptual)
+File: `hardware_code/gopa/CRI_proj/pcie2fifos.v`
+
+**What is pcie2fifos.v?**
+
+`pcie2fifos.v` is a **simple AXI4 slave bridge**, NOT a DMA engine. It:
+- Has NO MMIO registers for DMA control
+- Has NO ability to become PCIe bus master
+- Simply accepts AXI4 writes from the PCIe endpoint and stores them in a FIFO
+- Similarly, provides AXI4 reads from a different FIFO for outgoing data
+
+Think of it like a mailbox:
+- **Incoming mail slot (Input FIFO):** PCIe endpoint drops packets here
+- **Outgoing mail slot (Output FIFO):** command_interpreter puts responses here
+- pcie2fifos.v is just the slots - it doesn't "go get" mail from anywhere
 
 ```verilog
-// PCIe Endpoint IP presents AXI4 Write transaction
+// Simplified code from pcie2fifos.v
+// AXI4 Write Data Channel Handler
 always @(posedge aclk) begin
     if (s_axi_wvalid && s_axi_wready) begin
-        // Received 512-bit word from PCIe
+        // Received 512-bit word from PCIe endpoint
         input_fifo_wr_en <= 1'b1;
         input_fifo_din <= s_axi_wdata[511:0];
     end
 end
 
-// Input FIFO stores data
-// (Xilinx FIFO primitive handles this automatically)
+// Input FIFO instantiation (Xilinx XPM_FIFO primitive)
+xpm_fifo_sync #(
+    .FIFO_WRITE_DEPTH(16),    // Can store 16 × 512-bit packets
+    .WRITE_DATA_WIDTH(512),   // 512 bits per entry
+    .READ_DATA_WIDTH(512)
+) input_fifo (
+    .wr_clk(aclk),
+    .wr_en(input_fifo_wr_en),
+    .din(input_fifo_din),
+    .dout(input_fifo_dout),
+    .empty(input_fifo_empty),
+    .full(input_fifo_full)
+);
 ```
 
 **What's happening physically:**
-- AXI4 bus has 512 wires for `s_axi_wdata`
+- `s_axi_wdata` is 512 physical wires coming from PCIe endpoint
 - On clock rising edge where both `wvalid=1` and `wready=1`, data transfers
 - `input_fifo_wr_en` signal triggers FIFO write
-- FIFO is a BRAM primitive that stores the 512-bit word
+- FIFO is a BRAM primitive (36Kb blocks) configured as 16-deep × 512-bit
 - FIFO write pointer increments, `empty` flag deasserts
+- command_interpreter.v can now read from FIFO
 
 **Step 3.2: command_interpreter.v parses command**
 
@@ -744,9 +821,9 @@ fpga_compiler generates HBM data:
   - Synapses array
        ↓
 dmadump.dma_dump_write() sends data via PCIe:
-  - Host allocates DMA buffer
-  - FPGA reads from host memory
-  - Data flows: Host RAM → PCIe → FPGA Input FIFO
+  - Host allocates DMA buffer in RAM
+  - Host sends Memory Write TLPs to FPGA
+  - Data flows: Host RAM → PCIe → FPGA PCIe Endpoint → pcie2fifos.v → Input FIFO
        ↓
 command_interpreter.v parses commands:
   - Opcode 0x02 → HBM write

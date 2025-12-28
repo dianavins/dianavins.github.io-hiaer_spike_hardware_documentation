@@ -18,110 +18,110 @@ Before we explain *how* the network gets programmed, let's understand *where* ev
 │  │  axons = {'a0': [('h0', 1000), ...], ...}                         │  │
 │  │  connections = {'h0': [('o0', 1000), ...], ...}                   │  │
 │  └───────────────────────────────────────────────────────────────────┘  │
-│                               │                                          │
-│                               │ After CRI_network(target="CRI")          │
-│                               │ network is compiled and transferred      │
-│                               ▼                                          │
+│                               │                                         │
+│                               │ After CRI_network(target="CRI")         │
+│                               │ network is compiled and transferred     │
+│                               ▼                                         │
 └─────────────────────────────────────────────────────────────────────────┘
                                 │
                                 │ PCIe transfers during initialization
                                 │
 ┌───────────────────────────────▼─────────────────────────────────────────┐
 │                          FPGA HARDWARE                                  │
-│                                                                          │
+│                                                                         │
 │  Three Memory Systems (each stores different network data):             │
-│                                                                          │
+│                                                                         │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ 1. BRAM (Block RAM) - 1 MB                                         │ │
 │  │    Function: Stores INPUT SPIKE PATTERNS at runtime                │ │
 │  │    Written: During execution when you call network.step()          │ │
 │  │    Content: Which axons are firing RIGHT NOW                       │ │
-│  │                                                                     │ │
+│  │                                                                    │ │
 │  │    [NOT written during initialization - stays empty until runtime] │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
-│                                                                          │
+│                                                                         │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │ 2. HBM (High Bandwidth Memory) - 8 GB                              │ │
 │  │    Function: Stores NETWORK STRUCTURE (connectivity & weights)     │ │
 │  │    Written: DURING INITIALIZATION ← What this chapter focuses on   │ │
 │  │    Content: Three sub-regions:                                     │ │
-│  │                                                                     │ │
-│  │    ┌──────────────────────────────────────────────────────────┐   │ │
-│  │    │ HBM Region 1: AXON POINTERS (Base address: 0x0000)       │   │ │
-│  │    │ Size: 512 KB                                             │   │ │
-│  │    │                                                           │   │ │
-│  │    │ For each axon, stores a pointer saying:                  │   │ │
-│  │    │ "Where are this axon's synapses stored in HBM?"          │   │ │
-│  │    │ "How many synapse rows does this axon have?"             │   │ │
-│  │    │                                                           │   │ │
-│  │    │ Example for our network:                                 │   │ │
-│  │    │ Axon a0 pointer: "Start at row 0x8000, length 1 row"     │   │ │
-│  │    │ Axon a1 pointer: "Start at row 0x8001, length 1 row"     │   │ │
-│  │    │ ... (one pointer per axon)                               │   │ │
-│  │    └──────────────────────────────────────────────────────────┘   │ │
-│  │                                                                     │ │
-│  │    ┌──────────────────────────────────────────────────────────┐   │ │
-│  │    │ HBM Region 2: NEURON POINTERS (Base address: 0x4000)     │   │ │
-│  │    │ Size: 512 KB                                             │   │ │
-│  │    │                                                           │   │ │
-│  │    │ For each neuron, stores a pointer saying:                │   │ │
-│  │    │ "Where are this neuron's output synapses stored?"        │   │ │
-│  │    │ "How many synapse rows does this neuron have?"           │   │ │
-│  │    │                                                           │   │ │
-│  │    │ Example for our network:                                 │   │ │
-│  │    │ Neuron h0 pointer: "Start at row 0x8006, length 1 row"   │   │ │
-│  │    │ Neuron h1 pointer: "Start at row 0x8007, length 1 row"   │   │ │
-│  │    │ ... (one pointer per hidden neuron)                      │   │ │
-│  │    │                                                           │   │ │
-│  │    │ Output neurons (o0-o4): Also have pointers, but their    │   │ │
-│  │    │ synapses are SPIKE OUTPUT ENTRIES (tell hardware to      │   │ │
-│  │    │ send spike back to host instead of to another neuron)    │   │ │
-│  │    └──────────────────────────────────────────────────────────┘   │ │
-│  │                                                                     │ │
-│  │    ┌──────────────────────────────────────────────────────────┐   │ │
-│  │    │ HBM Region 3: SYNAPSES (Base address: 0x8000)            │   │ │
-│  │    │ Size: Variable (depends on network size)                 │   │ │
-│  │    │                                                           │   │ │
-│  │    │ This is where the ACTUAL CONNECTIONS live.               │   │ │
-│  │    │ Each HBM row stores 8 synapses.                          │   │ │
-│  │    │ Each synapse is 32 bits: [OpCode | Address | Weight]     │   │ │
-│  │    │                                                           │   │ │
-│  │    │ Example for our network:                                 │   │ │
-│  │    │ Row 0x8000 (Axon a0's synapses):                         │   │ │
-│  │    │   Synapse 0: [OpCode=000, Target=h0, Weight=1000]        │   │ │
-│  │    │   Synapse 1: [OpCode=000, Target=h1, Weight=1000]        │   │ │
-│  │    │   Synapse 2: [OpCode=000, Target=h2, Weight=1000]        │   │ │
-│  │    │   Synapse 3: [OpCode=000, Target=h3, Weight=1000]        │   │ │
-│  │    │   Synapse 4: [OpCode=000, Target=h4, Weight=1000]        │   │ │
-│  │    │   Synapse 5-7: [Unused padding = 0x0000_0000]            │   │ │
-│  │    │                                                           │   │ │
-│  │    │ Row 0x8006 (Neuron h0's output synapses):                │   │ │
-│  │    │   Synapse 0: [OpCode=000, Target=o0, Weight=1000]        │   │ │
-│  │    │   Synapse 1: [OpCode=000, Target=o1, Weight=1000]        │   │ │
-│  │    │   ... (h0 connects to all 5 output neurons)              │   │ │
-│  │    └──────────────────────────────────────────────────────────┘   │ │
+│  │                                                                    │ │
+│  │    ┌──────────────────────────────────────────────────────────┐    │ │
+│  │    │ HBM Region 1: AXON POINTERS (Base address: 0x0000)       │    │ │
+│  │    │ Size: 512 KB                                             │    │ │
+│  │    │                                                          │    │ │
+│  │    │ For each axon, stores a pointer saying:                  │    │ │
+│  │    │ "Where are this axon's synapses stored in HBM?"          │    │ │
+│  │    │ "How many synapse rows does this axon have?"             │    │ │
+│  │    │                                                          │    │ │
+│  │    │ Example for our network:                                 │    │ │
+│  │    │ Axon a0 pointer: "Start at row 0x8000, length 1 row"     │    │ │
+│  │    │ Axon a1 pointer: "Start at row 0x8001, length 1 row"     │    │ │
+│  │    │ ... (one pointer per axon)                               │    │ │
+│  │    └──────────────────────────────────────────────────────────┘    │ │
+│  │                                                                    │ │
+│  │    ┌──────────────────────────────────────────────────────────┐    │ │
+│  │    │ HBM Region 2: NEURON POINTERS (Base address: 0x4000)     │    │ │
+│  │    │ Size: 512 KB                                             │    │ │
+│  │    │                                                          │    │ │
+│  │    │ For each neuron, stores a pointer saying:                │    │ │
+│  │    │ "Where are this neuron's output synapses stored?"        │    │ │
+│  │    │ "How many synapse rows does this neuron have?"           │    │ │
+│  │    │                                                          │    │ │
+│  │    │ Example for our network:                                 │    │ │
+│  │    │ Neuron h0 pointer: "Start at row 0x8006, length 1 row"   │    │ │
+│  │    │ Neuron h1 pointer: "Start at row 0x8007, length 1 row"   │    │ │
+│  │    │ ... (one pointer per hidden neuron)                      │    │ │
+│  │    │                                                          │    │ │
+│  │    │ Output neurons (o0-o4): Also have pointers, but their    │    │ │
+│  │    │ synapses are SPIKE OUTPUT ENTRIES (tell hardware to      │    │ │
+│  │    │ send spike back to host instead of to another neuron)    │    │ │
+│  │    └──────────────────────────────────────────────────────────┘    │ │
+│  │                                                                    │ │
+│  │    ┌──────────────────────────────────────────────────────────┐    │ │
+│  │    │ HBM Region 3: SYNAPSES (Base address: 0x8000)            │    │ │
+│  │    │ Size: Variable (depends on network size)                 │    │ │
+│  │    │                                                          │    │ │
+│  │    │ This is where the ACTUAL CONNECTIONS live.               │    │ │
+│  │    │ Each HBM row stores 8 synapses.                          │    │ │
+│  │    │ Each synapse is 32 bits: [OpCode | Address | Weight]     │    │ │
+│  │    │                                                          │    │ │
+│  │    │ Example for our network:                                 │    │ │
+│  │    │ Row 0x8000 (Axon a0's synapses):                         │    │ │
+│  │    │   Synapse 0: [OpCode=000, Target=h0, Weight=1000]        │    │ │
+│  │    │   Synapse 1: [OpCode=000, Target=h1, Weight=1000]        │    │ │
+│  │    │   Synapse 2: [OpCode=000, Target=h2, Weight=1000]        │    │ │
+│  │    │   Synapse 3: [OpCode=000, Target=h3, Weight=1000]        │    │ │
+│  │    │   Synapse 4: [OpCode=000, Target=h4, Weight=1000]        │    │ │
+│  │    │   Synapse 5-7: [Unused padding = 0x0000_0000]            │    │ │
+│  │    │                                                          │    │ │
+│  │    │ Row 0x8006 (Neuron h0's output synapses):                │    │ │
+│  │    │   Synapse 0: [OpCode=000, Target=o0, Weight=1000]        │    │ │
+│  │    │   Synapse 1: [OpCode=000, Target=o1, Weight=1000]        │    │ │
+│  │    │   ... (h0 connects to all 5 output neurons)              │    │ │
+│  │    └──────────────────────────────────────────────────────────┘    │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
-│                                                                          │
+│                                                                         │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │ 3. URAM (UltraRAM) - 4.5 MB (16 banks × 288 KB)                   │ │
+│  │ 3. URAM (UltraRAM) - 4.5 MB (16 banks × 288 KB)                    │ │
 │  │    Function: Stores NEURON STATES (membrane potentials)            │ │
 │  │    Written: Initially zeroed during clear(), then updated at       │ │
 │  │             runtime as neurons integrate inputs                    │ │
 │  │    Content: Current membrane potential for each neuron             │ │
-│  │                                                                     │ │
+│  │                                                                    │ │
 │  │    Organization: 16 banks, each handling 8,192 neurons             │ │
 │  │    - Hidden neurons h0-h4 are in Bank 0                            │ │
 │  │    - Output neurons o0-o4 are also in Bank 0                       │ │
-│  │                                                                     │ │
+│  │                                                                    │ │
 │  │    Initial state (after clear()):                                  │ │
 │  │    h0: V = 0  (membrane potential starts at zero)                  │ │
-│  │    h1: V = 0                                                        │ │
-│  │    h2: V = 0                                                        │ │
+│  │    h1: V = 0                                                       │ │
+│  │    h2: V = 0                                                       │ │
 │  │    ... (all neurons start at V=0)                                  │ │
-│  │                                                                     │ │
+│  │                                                                    │ │
 │  │    [Values change during execution as synaptic inputs accumulate]  │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Why Three Separate Memories?
