@@ -1,4 +1,6 @@
-
+---
+nav_exclude: true
+---
 
 # Hardware System Architecture Diagram
 
