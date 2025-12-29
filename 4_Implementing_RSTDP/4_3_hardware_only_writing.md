@@ -1,0 +1,1 @@
+explains (1) how synapse weights are typically written on after recieved by pcie2fifo.v (2) how membrane potentials are updated during a timestep if the presynaptic neuron or axon spiked.

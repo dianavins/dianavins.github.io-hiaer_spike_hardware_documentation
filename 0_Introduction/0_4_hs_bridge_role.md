@@ -20,7 +20,6 @@ This document clarifies what `hs_bridge` (the Python software library) actually 
 - Provides functions like `fpga_compiler`, `dmadump`, `fpga_controller`
 
 **What it is NOT:**
-- Not a hardware component
 - Not a communication protocol (uses existing protocols)
 - Not part of the operating system
 

@@ -1,5 +1,5 @@
 ---
-title: "Reading and Writing Synapses"
+title: "Reading and Writing Synapses via hs_api"
 parent: "4 Implementing RSTDP"
 nav_order: 2
 ---
@@ -7,16 +7,6 @@ nav_order: 2
 # Reading and Writing Synapses
 
 Implementing Reward-modulated Spike-Timing-Dependent Plasticity (RSTDP) requires the ability to dynamically read and modify synaptic weights during network execution. This page explains how the `read_synapse()` and `write_synapse()` functions work, from the high-level Python API down to the FPGA hardware implementation.
-
-## Why We Need Synapse Access
-
-During normal network execution (covered in Chapter 2), synaptic weights are **read-only**. The network uses the weights programmed during initialization to compute neuron outputs. However, learning algorithms like RSTDP need to:
-
-1. **Read** current synaptic weights to calculate updates
-2. **Write** new weights back to hardware in real-time
-3. Do this **during execution**, not just at initialization
-
-The synapse read/write system provides this capability by giving the host PC direct access to HBM Region 3 (where synapses are stored).
 
 ---
 

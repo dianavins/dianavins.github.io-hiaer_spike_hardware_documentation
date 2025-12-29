@@ -6,7 +6,7 @@ parent: "0 Introduction"
 
 # Hardware Component Definitions (Low-Level)
 
-This guide introduces hardware components from the ground up, starting with basic concepts and building toward more complex systems. Each section assumes only knowledge from previous sections.
+This guide introduces hardware components from the ground up, starting with basic concepts and building toward more complex systems. Each section assumes only knowledge from previous sections. The rest of the chapters are also set up to introduce these ideas in the context of a network.
 
 ---
 
@@ -275,7 +275,7 @@ cpu.continue_doing_other_work()  # CPU is free!
 
 ### **Setup Phase (CPU/Host Software):**
 
-**Step 1: Allocate a buffer in system memory**
+**Step 1: Allocate a buffer in system memory to place information**
 
 In Python (using ctypes or similar):
 ```python
@@ -293,11 +293,6 @@ buffer_size = 1024 * 1024  # 1,048,576 bytes = 1 MB
 dma_buffer = (ctypes.c_uint8 * buffer_size)()  # Array of 1 MB bytes
 # This memory is in DDR4 system RAM
 ```
-
-**Why we use 1024 instead of 1000:**
-- Computers use binary (base 2), not decimal (base 10)
-- 2^10 = 1024 (convenient power of 2)
-- So: 1 KB = 1024 bytes, 1 MB = 1024 KB = 1,048,576 bytes
 
 **Step 2: Get the physical address**
 ```python
@@ -383,57 +378,7 @@ Memory controller:
 
 **System Architecture Diagram:**
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                          HOST SYSTEM                               │
-│                                                                    │
-│  ┌──────────────────────────────────────────────────────────────┐ │
-│  │                     CPU Die/Package                          │ │
-│  │                                                              │ │
-│  │  ┌──────────────┐          ┌──────────────────────┐        │ │
-│  │  │              │          │ Memory Controller    │        │ │
-│  │  │   CPU Cores  │<────────>│ (integrated in CPU)  │        │ │
-│  │  │              │          │                      │        │ │
-│  │  └──────────────┘          └────────┬─────────────┘        │ │
-│  │                                     │▲ ▲                   │ │
-│  │                                     ││ │ DDR4 bus          │ │
-│  │  ┌──────────────┐                   ││ │ (wires, 64-bit,   │ │
-│  │  │  PCIe Root   │                   ││ │  no packets)      │ │
-│  │  │  Complex     │<──────────────────┘│ │                   │ │
-│  │  │ (routes PCIe │────────────────────┘ │                   │ │
-│  │  │  to memory   │                      │                   │ │
-│  │  │ controller)  │                      │                   │ │
-│  │  └──────┬───────┘                      │                   │ │
-│  │         │ ▲                             │                   │ │
-│  └─────────┼─┼─────────────────────────────┼───────────────────┘ │
-│            │ │ PCIe TLP packets            │                     │
-│            │ │ (bidirectional)             │                     │
-│            │ │                             ▼                     │
-│            │ │                  ┌─────────────────────┐          │
-│            │ │                  │   DDR4 System RAM   │          │
-│            │ │                  │   (DIMM sticks)     │          │
-│            │ │                  │  - DMA buffers      │          │
-│            │ │                  │  - Command packets  │          │
-│            │ │                  └─────────────────────┘          │
-│            │ │                                                   │
-└────────────┼─┼───────────────────────────────────────────────────┘
-             │ │
-             │ │ PCIe lanes (wires)
-             │ │ 16x Gen3, differential pairs
-             ▼ │ TLP packets (bidirectional)
-    ┌──────────────────┐
-    │      FPGA        │
-    │                  │
-    │  ┌────────────┐  │
-    │  │ PCIe Hard  │  │
-    │  │   Block    │  │
-    │  └────────────┘  │
-    │                  │
-    └──────────────────┘
-
-Legend:
-  ──>  : Data flow direction (arrows show communication paths)
-  <──> : Bidirectional data flow
+![System Architecture Diagram](basic_introduction_map.png)
 
 PCIe Root Complex: Hardware inside the CPU that manages PCIe connections.
 Routes PCIe requests to/from the memory controller and CPU cores.
@@ -580,18 +525,6 @@ Now we understand how the host system works (DDR4 memory, PCIe connections, DMA)
 ### **FPGA (Field-Programmable Gate Array) - The Basics**
 
 **What it is:** An FPGA is a chip full of reconfigurable logic. Think of it as a blank canvas of digital circuits that you can reprogram to do whatever you want.
-
-**Why FPGAs exist:**
-- **CPUs are general-purpose:** They execute instructions one at a time (or a few in parallel)
-  - Flexible: Can run any program
-  - But: Limited parallelism
-- **ASICs are special-purpose:** Custom silicon designed for one task
-  - Fast: Optimized for specific task
-  - But: Expensive to design and manufacture, can't be changed
-- **FPGAs are in-between:** Reconfigurable hardware
-  - Parallel: Can perform many operations simultaneously
-  - Flexible: Can be reprogrammed for different tasks
-  - Fast: Much faster than CPU for suitable tasks (e.g., our spiking neural network simulator)
 
 **Our FPGA:** Xilinx XCVU37p (VU37P)
 - **Technology:** 20nm FinFET manufacturing process
@@ -899,69 +832,6 @@ We've covered DDR4 (main system memory, moderate bandwidth). Now let's look at s
 - **High frequency:** 1800 MT/s (similar to DDR4)
 - **Calculation:** 1024 bits × 1800 MT/s = 230 GB/s per stack
 - **4 stacks:** 230 GB/s × 4 = 920 GB/s total
-
----
-
-### **HBM2 Physical Structure**
-
-**3D Stacking:**
-- **Vertical stack:** 4 DRAM dies stacked on top of each other
-- Each die: 512 Megabits (64 MB)
-- 4 dies per stack × 4 stacks = 8 GB total capacity
-
-**Through-Silicon Vias (TSVs):**
-- **What they are:** Vertical conductors drilled through silicon die
-- **Diameter:** ~50 micrometers
-- **Purpose:** Connect dies in the stack (data buses, power, ground)
-- **Advantage:** Very short distance = low latency, enables wide buses
-
-**Silicon Interposer:**
-- **What it is:** Large (~1000 mm²) silicon substrate
-- **Sits under:** Both HBM stacks and FPGA die
-- **Connection:** Microbumps (~50 µm pitch) connect components to interposer
-- **Why silicon?**
-  - Much finer pitch than PCB (printed circuit board) routing
-  - Enables the 1024-bit wide buses (couldn't route this on PCB)
-
-**The complete package:**
-```
-[    FPGA die    ] [HBM] [HBM] [HBM] [HBM]
-  |  |  |  |  |     ||||   ||||   ||||   ||||  ← microbumps
-[========== Silicon Interposer =============]
-  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
-[============ Package substrate =============]
-```
-
----
-
-### **HBM2 DRAM Cell (Storage Element)**
-
-Like DDR4, HBM uses DRAM cells:
-
-**1T1C structure:**
-- **Capacitor:** Stores charge (~30 fF, ~10,000 electrons)
-  - Charged = 1, discharged = 0
-- **Transistor:** Access gate (connects capacitor to bitline)
-
-**Write operation:**
-1. Activate wordline (turns on transistor)
-2. Drive bitline to VDD (logic 1) or GND (logic 0)
-3. Capacitor charges/discharges through transistor
-4. Deactivate wordline (isolates capacitor)
-
-**Read operation (destructive):**
-1. Precharge bitline to VDD/2 (midpoint voltage)
-2. Activate wordline (connects capacitor to bitline)
-3. Capacitor shares charge with bitline
-   - Stored 1: Bitline rises slightly above VDD/2
-   - Stored 0: Bitline falls slightly below VDD/2
-4. Sense amplifier detects this tiny voltage change
-5. **Restore:** Write value back (read destroys the capacitor charge)
-
-**Refresh requirement:**
-- Every 64ms, all rows must be read and rewritten
-- Needed because capacitor leaks charge (quantum tunneling through dielectric)
-- Automatic, handled by memory controller
 
 ---
 
